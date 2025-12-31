@@ -12,6 +12,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Image
 from reportlab.lib.styles import getSampleStyleSheet
 import tempfile
 import math
+pio.kaleido.scope.default_format = "png"
+
 
 # ----------------------------------
 # PAGE CONFIG
