@@ -2,20 +2,35 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.io as pio
 import requests, zipfile
 from io import BytesIO
 from sklearn.ensemble import RandomForestRegressor
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table
+from sklearn.metrics import mean_squared_error
+from xgboost import XGBRegressor
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Image
 from reportlab.lib.styles import getSampleStyleSheet
+import tempfile
+import math
 
-# -------------------------------------------------
+# ----------------------------------
 # PAGE CONFIG
-# -------------------------------------------------
+# ----------------------------------
 st.set_page_config("Student Performance Dashboard", layout="wide")
 
-# -------------------------------------------------
+# ----------------------------------
+# DARK MODE TOGGLE
+# ----------------------------------
+dark_mode = st.sidebar.toggle("🌙 Dark Mode")
+
+if dark_mode:
+    pio.templates.default = "plotly_dark"
+else:
+    pio.templates.default = "plotly"
+
+# ----------------------------------
 # LOAD DATA
-# -------------------------------------------------
+# ----------------------------------
 @st.cache_data
 def load_data():
     url = "https://archive.ics.uci.edu/ml/machine-learning-databases/00320/student.zip"
@@ -27,148 +42,110 @@ def load_data():
 
 df = load_data()
 
-# -------------------------------------------------
-# SIDEBAR FILTERS
-# -------------------------------------------------
-st.sidebar.title("🎛 Filters")
-
-gender = st.sidebar.selectbox("Gender", ["All", "M", "F"])
-internet = st.sidebar.selectbox("Internet Access", ["All", "yes", "no"])
-
-filtered_df = df.copy()
-if gender != "All":
-    filtered_df = filtered_df[filtered_df["sex"] == gender]
-if internet != "All":
-    filtered_df = filtered_df[filtered_df["internet"] == internet]
-
-# -------------------------------------------------
+# ----------------------------------
 # MAIN TABS
-# -------------------------------------------------
-tab_overview, tab_analysis, tab_predict = st.tabs(
-    ["📘 Overview", "📊 Analysis", "🤖 Prediction"]
-)
+# ----------------------------------
+tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🤖 Model Comparison", "📄 Report"])
 
-# =================================================
-# TAB 1: OVERVIEW (TABS INSIDE TABS)
-# =================================================
-with tab_overview:
-    sub1, sub2 = st.tabs(["📄 Dataset", "📈 Summary"])
+# =====================================================
+# TAB 1: INTERACTIVE DASHBOARD
+# =====================================================
+with tab1:
+    st.subheader("📊 Interactive Student Dashboard")
 
-    with sub1:
-        st.dataframe(filtered_df.head())
-        st.download_button(
-            "⬇ Download Filtered CSV",
-            filtered_df.to_csv(index=False),
-            "filtered_students.csv",
-            "text/csv"
-        )
+    fig = px.histogram(
+        df,
+        x="G3",
+        title="Final Grade Distribution",
+        nbins=20
+    )
 
-    with sub2:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Average Grade", f"{filtered_df['G3'].mean():.2f}")
-        c2.metric("Max Grade", filtered_df["G3"].max())
-        c3.metric("Min Grade", filtered_df["G3"].min())
-        c4.metric("Pass Rate (%)", f"{(filtered_df['G3']>=10).mean()*100:.1f}")
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                buttons=[
+                    dict(label="All",
+                         method="update",
+                         args=[{"visible": [True]}]),
+                    dict(label="Pass (>=10)",
+                         method="restyle",
+                         args=[{"x": [df[df["G3"] >= 10]["G3"]]}]),
+                    dict(label="Fail (<10)",
+                         method="restyle",
+                         args=[{"x": [df[df["G3"] < 10]["G3"]]}]),
+                ],
+                direction="down",
+                showactive=True,
+            )
+        ]
+    )
 
-# =================================================
-# TAB 2: ANALYSIS (INTERACTIVE PLOTLY)
-# =================================================
-with tab_analysis:
-    st.subheader("Interactive Visual Analytics")
+    st.plotly_chart(fig, use_container_width=True)
 
-    suba, subb = st.tabs(["📊 Distributions", "🔗 Relationships"])
+    scatter = px.scatter(
+        df,
+        x="absences",
+        y="G3",
+        color="sex",
+        title="Absences vs Final Grade"
+    )
+    st.plotly_chart(scatter, use_container_width=True)
 
-    with suba:
-        fig = px.histogram(
-            filtered_df, x="G3",
-            nbins=20,
-            title="Final Grade Distribution",
-            hover_data=["sex", "studytime"]
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        fig = px.box(
-            filtered_df,
-            x="studytime",
-            y="G3",
-            title="Study Time vs Final Grade"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    with subb:
-        fig = px.scatter(
-            filtered_df,
-            x="absences",
-            y="G3",
-            color="sex",
-            title="Absences vs Final Grade",
-            hover_data=["studytime"]
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        corr = filtered_df.corr(numeric_only=True)
-        fig = px.imshow(
-            corr,
-            text_auto=True,
-            title="Correlation Heatmap"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-# =================================================
-# TAB 3: PREDICTION + PDF REPORT
-# =================================================
-with tab_predict:
-    st.subheader("🎯 Predict Student Final Grade")
+# =====================================================
+# TAB 2: MODEL COMPARISON
+# =====================================================
+with tab2:
+    st.subheader("🤖 Model Performance Comparison")
 
     model_df = pd.get_dummies(df, drop_first=True)
     X = model_df.drop("G3", axis=1)
     y = model_df["G3"]
 
-    model = RandomForestRegressor(n_estimators=200, random_state=42)
-    model.fit(X, y)
+    rf = RandomForestRegressor(n_estimators=200, random_state=42)
+    xgb = XGBRegressor(n_estimators=200, learning_rate=0.05, random_state=42)
 
-    G1 = st.slider("Grade 1 (G1)", 0, 20, 10)
-    G2 = st.slider("Grade 2 (G2)", 0, 20, 10)
-    studytime = st.slider("Study Time", 1, 4, 2)
-    absences = st.slider("Absences", 0, 50, 5)
+    rf.fit(X, y)
+    xgb.fit(X, y)
 
-    input_data = np.zeros(len(X.columns))
-    for col in X.columns:
-        if col == "G1": input_data[X.columns.get_loc(col)] = G1
-        if col == "G2": input_data[X.columns.get_loc(col)] = G2
-        if col == "studytime": input_data[X.columns.get_loc(col)] = studytime
-        if col == "absences": input_data[X.columns.get_loc(col)] = absences
+    rf_rmse = math.sqrt(mean_squared_error(y, rf.predict(X)))
+    xgb_rmse = math.sqrt(mean_squared_error(y, xgb.predict(X)))
 
-    prediction = model.predict([input_data])[0]
-    st.success(f"Predicted Final Grade: {prediction:.2f}")
+    st.metric("Random Forest RMSE", f"{rf_rmse:.2f}")
+    st.metric("XGBoost RMSE", f"{xgb_rmse:.2f}")
 
-    # ---------------- PDF REPORT ----------------
+    best_model = rf if rf_rmse < xgb_rmse else xgb
+    st.success(f"🏆 Best Model: {'Random Forest' if best_model == rf else 'XGBoost'}")
+
+# =====================================================
+# TAB 3: PDF REPORT WITH CHART
+# =====================================================
+with tab3:
+    st.subheader("📄 Generate Performance Report")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_img:
+        fig.write_image(tmp_img.name)
+
     def generate_pdf():
-        file = "student_report.pdf"
-        doc = SimpleDocTemplate(file)
+        pdf_file = "student_report.pdf"
+        doc = SimpleDocTemplate(pdf_file)
         styles = getSampleStyleSheet()
 
         content = [
             Paragraph("Student Performance Report", styles["Title"]),
-            Paragraph(f"Predicted Final Grade: {prediction:.2f}", styles["Normal"]),
-            Paragraph("Input Summary:", styles["Heading2"]),
-            Table([
-                ["G1", G1],
-                ["G2", G2],
-                ["Study Time", studytime],
-                ["Absences", absences]
-            ])
+            Paragraph(f"Random Forest RMSE: {rf_rmse:.2f}", styles["Normal"]),
+            Paragraph(f"XGBoost RMSE: {xgb_rmse:.2f}", styles["Normal"]),
+            Image(tmp_img.name, width=400, height=300)
         ]
 
         doc.build(content)
-        return file
+        return pdf_file
 
-    if st.button("🧾 Generate PDF Report"):
-        pdf_file = generate_pdf()
-        with open(pdf_file, "rb") as f:
+    if st.button("📄 Generate PDF"):
+        file = generate_pdf()
+        with open(file, "rb") as f:
             st.download_button(
                 "⬇ Download Report",
                 f,
-                file_name="student_report.pdf",
+                file_name="student_performance_report.pdf",
                 mime="application/pdf"
             )
