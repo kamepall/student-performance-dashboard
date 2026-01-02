@@ -1,9 +1,7 @@
 streamlit
 pandas
-numpy
 plotly
 scikit-learn
-xgboost
 requests
+statsmodels
 reportlab
-kaleido
